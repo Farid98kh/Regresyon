@@ -1,0 +1,594 @@
+# Denetimli İstatistiksel Öğrenme - 1. Ödev
+# 2023/11/16
+# Farid Khorshidi
+# Gökçe Doğan
+# Banafsheh Eskandari
+# Nasrullah Moniry
+
+####################
+### Kütüphaneler ###
+####################
+
+library(Hmisc)
+library(corrplot)
+library(nortest)
+library(caret)
+library(dplyr)
+library(psych)
+library(lmtest)
+library(car)
+library(olsrr)
+library(tidyverse)
+library(magrittr)
+library(ModelMetrics)
+library(mice)
+library(GGally)
+library(tidyr)
+library(ggplot2)
+library(base)
+library(ISLR)
+library(olsrr)
+library(e1071)
+
+
+
+
+
+data <- read.csv("G:/insurance.csv")
+
+head(data)
+
+str(data)
+
+md.pattern(data)
+
+df <- data
+
+dim(df)
+
+# Veri Seti
+
+# Veri seti 1338 gözlem veya kişiden ve 6sı bağımsız 7 değişkenden oluşmaktadır
+# hedef değişken sigorta maliyetini tahmin etmektir
+
+# veri seti kişisel Tıbbi maliyeti adlandırılmaktadır ve sağlık sigortası olarak biliniyor
+# bu veri setinde aşağıda belirtilen değişkenler bazında kişi başı veriler toplanılmıştır
+# Age: Yaş
+# Sex: Müteahhitin Cinsiyeti
+# bmi(Body Mass Index): Vücut Kitle Endeksi - Boya göre nispeten yüksek veya düşük olan ağırlıklarını gösteren kriter Kg/m^2
+# boy-kilo oranı- ideal olarak 18.5 ila 24.9
+# Children: Çocuk Sayısı
+# Smoker: Sigara içilmesi - Evet - Hayır
+# region: Yararlananın ABD de Kuzeydoğu-Güneydoğu-Güneybatı-Kuzeybatı olarak yaşadığı bölge
+# charges: Masraflar - Sağlık sigortası tarafından faturalandırılan bireysel tıbbi masraflar
+
+###########################
+### Test - Train Ayrımı ###
+###########################
+
+sample_size <- floor(0.80 * nrow(df))
+set.seed(2022900191)
+train_index <- sample(nrow(df), size= sample_size, replace = F)
+train <- df[train_index,]
+test <- df[-train_index,]
+dim(train)
+dim(test)
+
+# cross validation e gerek duyulmamıştır bu traınıng işini hyperparametreleri iyi tahmin etmek için kullanırız
+
+df$age <- as.numeric(df$age)
+df$children <- as.numeric(df$children)
+df$sex <- as.factor(df$sex)
+df$smoker <- as.factor(df$smoker)
+df$region <- as.factor(df$region)
+
+#############################
+# Tanımlayıcı İstatistikler #
+#############################
+
+summary(df)
+# children değişkeninin range'inin oldukça düşük(5) olduğu dikkat çekmektedir.
+# Age değişkeninin mean ile medyanı birbirine oldukça yakın çıkmıştır, bu da normal dağıldığına dair bir kanıt
+# BMI değişkeninin mean ile medyanı birbirine oldukça yakın çıkmıştır, bu da normal dağıldığına dair bir kanıt
+# Bağımlı değişkenin mean i medianın dan yüksek çıkmıştır bu da onun sağa çarpık olduğunu gösterir
+# Bağımlı değişkenin 3. quartile ile max değerinin arasında çok fazla aralık var bu da onun yüksek değerlerde çok fazla aykırı değeri olduğunu gösterir
+# 
+
+# Kategorik değişkenlerin Tanımlayıcı İstatistiklerinde
+# cinsiyette kadın erkek sayısı çok yakın
+# Bölgelerde 4 seviyeden southeast hariç bütün bölgelerden neredeyse aynı sayıda gözlem alınmış
+# Sigara değişkenine bakıldığında içmeyenlerin sayısı içenlerin 4 katı kadar
+# îleride 2den fazla seviye ye sahip değişkenin seviyelerini model katsayısı anlamlılığı için birleştirebiliriz
+# Chıldren değişkeni sayısal olsa da kategorik davranış göstermektedir ileride model iyileşmesi ve katsayısının anlamlılığı için kategorik olarak kullanabiliriz
+
+
+# grafik analizleri
+library(RColorBrewer)
+
+my_pallete <- brewer.pal(n=7, name = "Pastel2")
+par(mfrow= c(1,4))
+for(i in c(1,3,4,7)){
+  
+  boxplot(df[,i], main = names(df)[i], col = my_pallete[i])
+  
+}
+
+# Age ve bmi burada da normal dağıldığı lakin bmi ın aykırı değer
+# barındırdığı görülmekte
+# Children ortalama 1 le 3 arasında değişmekte
+# Charges değişkeni sağa çarpık olduğu ve çok fazla uç değeri olduğu görülmekte ve çoğunlukla 5000 ile 18000 arasında değişmekte
+
+
+# Bağımlı değişkenin dağılımı ile ilgili yorum yapabilmek için, bu değişkenin histogram grafiği ile normallik testi yapılacaktır.
+par(mfrow=c(1,1))
+hist(df$charges, main = "Charges histogramı", ylab = "Frekans", xlab = "charges",col="burlywood2",
+     border="burlywood4", probability = T, ylim = c(0, 0.00006))
+
+lines(density(df$charges), col = 9, lwd = 2)
+skewness(df$charges)
+
+# charges değişkeninin iki tepeli olduğu histogram grafiğinden anlaşılmıştır. Sağa çarpıklık da görülmektedir. Uç değer olarak da düşünebileceğimiz 50000 ve fazlası değerler çıkarılırsa normallik sağlanabilir. 
+
+# Ancak yine de normallik sınamaları ile daha sağlıklı bir yorum yapmak istenilmiştir. 
+
+### Normallik Testleri ###
+
+# Ho : charges değişkeni normal dağılmıştır.
+# Ha : charges değişkeni normal dağılmamaktadır.
+
+
+### Anderson - Darling normallik testi
+
+ad.test(df$charges)
+# P-value 0.05'ten  küçük olduğu için değişkenin normal dağıldığı hipotezi reddedilebilir.
+
+### Shapiro - Wilk normallik testi
+
+shapiro.test(df$charges)
+# P-value 0.05'ten küçük olduğu için değişkenin normal dağıldığı hipotezi reddedilebilir.
+
+# charges değişkeni normal dağılmamaktadır.
+# Değişkenin normal dağılmaması, analizin ilerleyen bölümlerinde hataların normal dağılmasını da engelleyebilecek bir ayrıntıdır.
+# Değişkenin normal dağılmamasının sebebinin aykırı gözlemler olduğu histogram grafiğinde görülmektedir.
+# Ancak bu aykırı gözlemlerin çıkarılıp çıkarılmayacağına ilerleyen kısımlarda, standartlaştırılmış artıkların uç değer analizinde karar verilecektir.
+
+
+# Grafikler
+
+# Bütün Yaşlar için ortalama Charges değerleri
+par(mfrow=c(1,1))
+pltagecharges <- tapply(df$charges,df$age,mean)
+pltagecharges
+plot(18:64,pltagecharges,main = "charges değişimi ortalaması", ylab="Charges",xlab = "Age")
+
+
+par(mfrow=c(2,2))
+v = array()
+for(i in c("age","region", "sex", "smoker")){
+  
+  v = tapply(df$charges,df[,i],mean)
+  barplot(v, names.arg = unique(df[,i]),col = "skyblue",
+          main = c("Mean Charges by", i ,"Group", sep=""), xlab = i, ylab = "Mean Charges",
+          ylim = c(0,25000))
+  print(c(i,round(summary(v))))
+  
+}
+# 
+# kategorik değişkenlerde cinsiyet ve bölgelerin groupları charges miktarında çok az etkin olmuşlardır ve nerdeyse önemli bir fark yoktur
+# region da bir seviye birleştirmesi yapılabilir ve cinsiyet kaldırılabilir
+# butun sigara içenlerin masrafları ortalaması içmeyenlerden daha az bunun da nedeni sigara içmeyen gözlemlerin çok fazla alındığıdır
+
+
+
+ggpairs(df[c(1,3,7)])
+# Değişkenleri birbirleri ile arasındaki ilişkiyi ortaya çıkaran serpme grafikleri incelendiğinde herhangi bir doğrusal ilişkiye rastlanılmamıştır.
+# Bazı değişkenlerin sayısal olmasına rağmen kategorik hareket ettiği fark edilmiştir. 
+
+
+indexes = sapply(df, is.factor)
+indexes["charges"] = TRUE
+df[,indexes]%>%
+  gather(-charges, key = "var", value = "value") %>% 
+  ggplot(aes(x = value, y = charges, color = value)) +
+  geom_boxplot() +
+  facet_wrap(~ var, scales = "free")+
+  theme(axis.text.x = element_text(angle = 30, hjust = 0.85),legend.position="none")
+
+# kategorik değişkenlerin de boxplotları nı çizdiğimizde onları baz alarak bağımlı değişkenin dağılımı ve uç değerlerini görüyoruz
+# cinsiyet ve bölge smoker le kıyasla çok büyük bir etkisi olmamış değişken seçimi kısmında devam edip edilemeyeceklerine karar verilecektir
+# kuzey ve güney yönleri bir birinden çok farklı değil o yüzden birleştirebiliriz
+
+ggplot(df, aes(x = df$age , y = df$charges, color = df$smoker)) +
+  geom_point() +
+  geom_smooth(method = "lm", se = FALSE) +
+  labs(title = "Linear Regression: Age vs Charges",
+       x = "Age",
+       y = "Charges",
+       color = "Smoker Status")
+
+# yaşlar bazında sigara için  ve içmeyenin mantıklı olarak beklediğimiz içenin masrafı fazla olur
+
+ggplot(df, aes(x = df$bmi, y = df$charges, color = df$smoker)) +
+  geom_point() +
+  geom_smooth(method = "lm", se = FALSE) +
+  labs(title = "Linear Regression: BMI vs Charges",
+       x = "BMI",
+       y = "Charges",
+       color = "Smoker Status")
+# sigara içen BMI yı fazla birisi içmeyen BMI yı az olandan masrafları fazladır
+
+ggplot(df, aes(x = df$children, y = df$charges, color = df$smoker)) +
+  geom_point() +
+  geom_smooth(method = "lm", se = FALSE) +
+  labs(title = "Linear Regression: BMI vs Charges",
+       x = "CHILDREN",
+       y = "Charges",
+       color = "Smoker Status")
+# çocuk sayısı fazla olan bireyler az sigara bağımlısı olmazken masrafları da çok hafif artıyor
+
+
+ggplot(df, aes(x = factor(df$children), y = df$charges, fill = df$smoker)) +
+  geom_violin(trim = F) +
+  labs(title = "Violin Plot of Charges by Children and Smoker Status",
+       x = "Children",
+       y = "Charges") +
+  scale_fill_manual(values = c("yes" = "blue", "no" = "red"), name = "Smoker")
+
+
+ggplot(df, aes(x = df$region, y = df$charges, fill = df$smoker)) +
+  geom_bar(stat = "identity", position = "dodge") +
+  scale_fill_manual(values = c("no" = "lightgray", "yes" = "red")) +  # Adjust colors as needed
+  labs(title = "Bar Plot of Charges by Region and Smoker Status",
+       x = "Region",
+       y = "Charges",
+       fill = "Smoker") +
+  theme_minimal()
+
+# sigara içmeyenlerin bölgelere göre içenlerden daha az masraf yaptıkları görülmekte
+
+
+ggplot(df, aes(x = df$sex , y = df$charges, fill = df$region)) +
+  geom_bar(stat = "identity", position = "dodge") +
+  facet_wrap(df$children ~ df$smoker) +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+  labs(x = "Sex(female:0 , male:1)",
+       y = "Charges",
+       fill = "Region",
+       title = "Charges by Sex and Region",
+       subtitle = " Children (0,1,2,3,4,5) ve Smoker durumu (yes , no)")
+
+
+
+dd <- function(sad){
+  results <- list()
+  operation_count <- 0
+  for(i in 0:5){
+    for(j in c("no", "yes")){
+      for(k in c("female","male")){
+        for(l in c("northeast","northwest","southeast","southwest")){
+          s <- df$charges[df$children==i & df$region == l  & df$sex == k & df$smoker == j]
+          if (length(s) > 0) {
+            a <- mean(df$charges[df$children==i & df$region == l  & df$sex == k & df$smoker == j], na.rm = T) 
+            operation_count <- operation_count + 1
+            results[[operation_count]] <- round(a, digits = 3)
+            print(paste(operation_count ,":", round(a,digits = 3)))
+          } else {
+            operation_count <- operation_count + 1
+            results[[operation_count]] <- print(paste(operation_count,": No observations for the given conditions."))
+            #print(paste(operation_count,": No observations for the given conditions."))
+          }
+        }
+      }
+    }
+  }
+  return(results)
+}
+x <- dd(df)
+
+tail(as.numeric(x), n = 16)
+
+
+
+par(mfrow=c(1,1))
+corr <- cor(df[c(7,1,3,4)])
+print(corr)
+corrplot.mixed(corr, lower = "pie", upper = "number")
+corrplot(corr, method="color" )
+
+
+# Sayısal değişkenlerin korelasyon değerleri incelendiğinde bağımlı değişken charges ile children değişkeni arasında (0.067) korelasyon bulunmamaktadır.
+# children değişkeni sayısal bir değişken olmasına rağmen kategorik davranan bir değişken olarak dikkat çekmektedir. Belki bu değişkeni kategorik olarak kullanmak bir değişikliğe sebep olabilir. İlerleyen bölümlerde bu ihtimal dikkate alınacaktır.
+# Bağımlı değişken charges ile bağımsız değişken age arasında da az(0.29) pozitif bir korelasyon bulunduğu saptanmıştır.
+
+
+###################
+# Model Oluşturma #
+###################
+# Model Geçerliliği F Hipotez Testi
+# Ho : Bağımlı değişken ve bağımsız değişkenler arasında doğrusal bir ilişki bulunmamaktadır.
+# Ha : Bağımlı değişken ile en az bir bağımsız değişken arasında doğrusal bir ilişki bulunmaktadır.
+
+# Katsayılarının Anlamlılığına İlişkin Hipotez Testi
+# Ho : katsayı 0'dan önemli ölçüde farklı değildir.
+# Ha : katsayı 0'dan önemli ölçüde farklıdır.
+
+model1 <- lm(charges ~ ., data =train )
+summary(model1)
+# Adjusted R-squared:  0.7567 
+# F-statistic: 416.6
+# F istatistiğinin p değeri 0.05 önem düzeyinden küçük olduğu için %95 güven düzeyinde Ho reddedilmiştir. 
+# En az bir katsayı model için anlamlıdır.
+# modelde sexmale ve regionnorthwest 0dan önemli ölçüde farklı olmadığını p değerinin 0.05 den fazla olduğundan görüyoruz
+par(mfrow=c(2,2))
+plot(model1)
+# artıkları sabit varyanslı olmadığını ve genişlediğini görüyoruz
+vif(model1)
+# bütün değişkenler için çoklu bağlantılık problemimiz yoktur
+
+
+
+model2 <- lm(charges ~ age  + bmi*age + sex + bmi + children + smoker + region
+             +poly(age, degree = 2) + poly(bmi, degree = 2) , data=train)
+summary(model2)
+# Adjusted R-squared:  0.7591
+# age ve bmi değişkenleri nin etkileşimi anlamsız eğim katsayısı olmuştur
+# polynom katsayılarda Na değeri bir doğrusal değişken ve quadratik olmayan regresyon işleminden haber veriyor
+
+
+model3 <- lm(charges ~ age + sex + bmi + children + smoker + region + region*sex, data=train)
+summary(model3)
+# Adjusted R-squared:  0.7561
+
+# interaction işlemi sayısal değişkenler için gerekebileceğini varsayarak
+# bir de kategorik değişkene yapılırsa nasıl anlamsızlık özet istatistiklerde oluşturacağına bakmak istenilmiştir
+
+
+#  region değişkenini 2 seviyeye düşürüyoruz 
+# ve model oluşturup performansına bakacağız yanlılık oluştursa vazgeçeceğiz
+train1 <- train %>%
+  mutate(new_region = case_when(
+    grepl("southeast", train$region) ~ "south",
+    grepl("southwest", train$region) ~ "south",
+    grepl("northeast", train$region) ~ "north",
+    grepl("northwest", train$region) ~ "north",
+    TRUE ~ "unknown"  
+  ))
+View(train1)
+
+test1 <- test %>%
+  mutate(new_region = case_when(
+    grepl("southeast", test$region) ~ "south",
+    grepl("southwest", test$region) ~ "south",
+    grepl("northeast", test$region) ~ "north",
+    grepl("northwest", test$region) ~ "north",
+    TRUE ~ "unknown"  
+  ))
+View(test1)
+
+
+modelf <- lm(charges ~  age + sex + bmi + children + smoker + new_region, data =train1 )
+summary(modelf)
+
+vif(modelf)
+# Modelin VIF değerleri incelendiğinde hiçbir bağımsız değişkenin VIF değeri 5'ten büyük çıkmadığı için modelde herhangi bir bağlantı problemi bulunmamaktadır.
+
+### Olası En iyi Alt Küme Seçimi ###
+
+all.steps <- ols_step_all_possible(modelf)
+all.steps[c(1,7,22,42,57,63),]
+all.steps <- ols_step_all_possible(model1)
+all.steps[c(1,7,22,42,57,63),]
+
+# cp değerleri parametre sayısından az olan model 1 ile devam edilmiştir
+
+plot(all.steps)
+
+
+
+# Parametre sayısı birden çok olduğu ve model karşılaştırması yapılacağı için Adjusted R square değerleri incelenmiştir.
+# Tüm metriklere(Rsquare, Adj.R Square, Cp, AIC, SBIC ve SBC) göre en iyi sonuç veren modeller  63(full model), 57, 42, 22, 7, 1 olarak seçilmiştir.
+# Bu modeller kendi aralarında kıyaslandığında 1 ve 7 ci model dışında Adjusted Rsquare değerleri arasında dikkat çeken bir farklılık bulunmamaktadır.
+# Rsquare, AIC, SBIC ve SBC kriterleri incelendiğinde de ayrım yapmanın değerler birbirine yakın olduğu için mümkün olmadığı fark edilmiştir.
+# Ayrım yapabilmek için en iyi seçeneğin Cp değerlerine bakmak olduğu fark edilmiştir.
+# Cp değerlerine bakıldığında ise Cp değeri parametre sayısından büyük olmayan gözlemler(yanlılığı engellemek için) seçilmiştir. Model seçenekleri 63(full model), 57 olarak azaltılmıştır.
+# Bu model seçeneklerinin Cp değerleri de ayrıntılı olarak incelendiği zaman Cp değeri parametre sayısına en yakın olarak dikkat çeken 57 ci model, en iyi model olarak seçilmiştir.
+# Bu model seçeneğinin seçilmesindeki bir başka neden ise parametre sayısıdır. Önerilen 63 cü model parametre sayısı 1 tane, 57. modelden fazla olmasına rağmen; Adj. R square ve R square değerlerinde kayda değer bir artış olmazken hatta hafif bir azalış da kaydedilmiştir.
+# ve buna cinsiyet değişkeni sebebiyet vermiştir
+# Bu da o bağımsız değişkenin yani cinsiyetin eklenmesinin modelin açıklayıcılığı üzerinde olumlu bir etkisi olmadığı fark edilmiştir.
+# Olası en İyi Alt Küme Seçimi sonrasında karar verilen modelin bağımsız değişkenleri aşağıdaki gibidir:
+
+
+all.steps$predictors[57]
+
+
+#######################################################
+### Performans Metriklerine Göre Uygun Model Seçimi ###
+#######################################################
+
+
+
+model63 <- lm(charges ~ ., data=train)
+summary(model63)
+
+model57 <- lm(charges ~ age + bmi + children + smoker + region,data=train)
+summary(model57)
+
+model42 <- lm(charges ~ age + bmi + children + smoker,data=train)
+summary(model42)
+# model 42 nin açıklayıcılığı model 57 den hiç farkı yok sayılır
+# o yüzden bununla devam ede biliriz
+
+
+
+
+
+
+
+
+prediction63 <- predict(model63, newdata = test)
+prediction57 <- predict(model57, newdata = test)
+prediction42 <- predict(model42, newdata = test)
+
+
+mse63 <- mse(prediction63, test$charges)
+mse57 <- mse(prediction57, test$charges)
+mse42 <- mse(prediction42, test$charges)
+
+cbind(mse63, mse57, mse42)
+
+RMSE63 <- rmse(prediction63, test$charges)
+RMSE57 <- rmse(prediction57, test$charges)
+RMSE42 <- rmse(prediction42, test$charges)
+
+cbind(RMSE63, RMSE57, RMSE42)
+
+mae63 <- mae(prediction63, test$charges)
+mae57 <- mae(prediction57, test$charges)
+mae42 <- mae(prediction42, test$charges)
+
+cbind(mae63, mae57, mae42)
+
+#test veri setleri ile yapılmış olan tahminlerinin Root Mean Square Error değerleri incelendiğinde arada anlamlı bir fark olmadığı fark edilmiştir. En düşük hataya sahip olan model, 57 ci model olarak saptanmıştır.
+# ama katsayılar anlamlılığı için model 42 nihayi olarak seçilmiştir
+
+modelbest <- lm(charges ~ age + bmi + children + smoker ,data=train)
+summary(modelbest)
+par(mfrow=c(2,2))
+plot(modelbest)
+
+confint(modelbest)
+
+# Residuallar ile Fitted Valuelar arasındaki grafik incelendiğinde bir genişleme gözlemlenmemiştir. Hataların sabit varyanslı olmadığı görülmektedir.
+# Ayrıca uç değerlerin modeli baskıladığı da dikkat çekmektedir. Uç değerlerin veri setinden çıkarılması mantıklı bir hareket olabilir. 
+
+
+
+
+
+importance_list <- sort(abs(coef(modelbest)[-1]))
+par(mfrow=c(1,1))
+cat("Feature importance ranking\n")
+for (variable in names(importance_list)) {
+  importance_value <- importance_list[variable]
+  cat(variable, ":", importance_value, "\n")
+}
+
+norm_importance <- as.numeric(scale(importance_list, center = FALSE, scale = max(importance_list)))
+text(x = barplot(norm_importance, names.arg = rep("", length(norm_importance)),
+                 col = "yellow", ylim = c(0, 1), main = "", xlab = "", ylab = "", las = 1, cex.names = 0.8),
+     y = -0.05, labels = names(importance_list), col = "black", srt = 45, adj = 1, xpd = TRUE, cex = 0.8)
+
+
+title(main = "değişken Önemi", sub = "Mutlak Katsayıya Göre", cex.main = 1.5, cex.sub = 0.8)
+
+
+ols_press(modelbest)
+ols_press(model1)
+# bu Önemli azalış son modelin iyi tahmin edebileceyi anlamına gelir
+
+############################
+### Hataların Normalliği ###
+############################
+par(mfrow=c(1,1))
+
+hist(modelbest$residuals, ylab = "Frekans", xlab = "Hatalar", main = "Hataların Histogram Grafiği", col="burlywood2",
+     border="burlywood4", probability = T, ylim = c(0, 0.00013))
+
+
+lines(density(modelbest$residuals), col = 9, lwd = 2)
+
+# Hataların histogram grafiği incelendiğinde sağa çarpıklık fark edilmektedir. Daha önce de bu çarpıklığın olacağı öngörülmüştü. Bunun sebebi bağımlı değişkenin normal dağılmaması olabilir. 
+# Eğer uç değer, kaldıraç ve etkin gözlemlerin veri setinden çıkarılması sonucunda yine hataların normal dağılması sağlanmazsa, bağımlı değişken üzerinde değişiklikler yapılacaktır. 
+
+
+
+
+# Shapiro-Wilk Normallik Testi Hipotezi:
+
+# Ho : Hatalar normal dağılmaktadır.
+
+# Ha : Hatalar normal dağılmamaktadır.
+
+shapiro.test(modelbest$residuals)
+# P değeri 0.05’ten küçük olduğu için %95 güvenle değişkenin normal dağıldığı hipotezini reddetmek için yeterli kanıt vardır.
+
+
+
+#####################################
+### Hataların Sabit Varyanslılığı ###
+#####################################
+
+# BP test hipotezi:
+
+# Ho: Hatalar sabit varyanslıdır.
+
+# Ha: Hatalar sabit varyanslı değildir.
+
+bptest(charges ~ age + bmi + children + smoker ,data=train)
+
+# P değeri 0.05’ten küçük olduğu için %95 güvenle hatalar sabit varyanslıdır hipotezi reddedilebilir.
+
+
+
+########################
+### Uç Değer Analizi ###
+########################
+mse=sum(modelbest$residuals^2)/modelbest$df
+standardized.residuals <- modelbest$residuals/sqrt(mse)
+par(mfrow=c(1,1))
+
+
+plot(modelbest$fitted.values,standardized.residuals, xlab = "Tahmin Değerleri", ylab = "Standarlaştırılmış Artıklar")
+abline(h=0)
+abline(h=-3)
+abline(h=3)
+
+# Tahmin değerleri ile standartlaştırılmış artıklar grafiği incelendiğinde;
+length(which(abs(standardized.residuals)>3))
+# Standartlaştırılmış artık değeri -3'den küçük, 3'den büyük olan 24 adet artık saptanmıştır.
+# Bu 24 değer, uç değer olarak yorumlanmıştır. 
+
+# Aykırı değer olarak saptanan gözlemlerin indeks numaraları aşağıdaki gibidir.
+which(abs(standardized.residuals)>3)
+
+#aykırı değerleri çıkardıktan sonra R squared de iyileşme olmuştur
+
+
+########################
+### Kaldıraç Analizi ###
+########################
+
+st.res <- modelbest$residuals/sd(modelbest$residuals) #modelin hatasını bulmak gerekir, degrees of freedom hatası yüzünden
+plot(hatvalues(modelbest),st.res)
+abline(h=c(-2,2),v=2*mean(hatvalues(modelbest)))
+identify(hatvalues(modelbest),st.res)
+
+# Hat değerleri ile standardized residuals arasındaki grafik incelendiğinde hiç kötü kaldıraç olmadığı gözlemlenmiştir. İyi kaldıraç sayısı ise 86 olarak saptanmıştır. 
+which(hatvalues(modelbest)>2*mean(hatvalues(modelbest)))
+length(which(hatvalues(modelbest)>2*mean(hatvalues(modelbest))))
+
+identify(qqnorm(st.res))
+qqline(st.res)
+
+######################
+### Cooks Distance ###
+######################
+
+plot(train$charges,cooks.distance(modelbest))
+abline(h=4/(length(train$charges)-6))
+
+# Cooks Discance grafiği incelendiğinde 94 adet etkin gözlem olduğu saptanmıştır. Grafikte outlier olarak saptanan gözlemlerin etkin gözlem olduğu fark edilmiştir. Demek ki aykırı gözlemler modelin eğimine çok etki yapıyor. Model geliştirmede bu konuda değişiklikler yapmak mantıklı olabilir.
+length(which(cooks.distance(modelbest) > 4/(length(train$charges)-6)))
+# Cooks Distance'a göre etkin gözlemlerin indeks numaraları aşağıdaki gibidir. 
+which(cooks.distance(modelbest) > 4/(length(train$charges)-6))
+
+par(mfrow=c(2,2))
+sonmodel <- lm(charges ~ age + bmi + children + smoker,data=train[-which(cooks.distance(modelbest) > 4/(length(train$charges)-6)),])
+plot(sonmodel)
+summary(sonmodel)
+confint(sonmodel)
+shapiro.test(sonmodel$residuals)
+
+# Bu kısma kadar yapılan değişikliklerin hiçbiri modelin varsayımları sağlamasına yardımcı olmamıştır. 
+# Bağımlı değişkenin normal dağılmıyor oluşu buna sebep olabilir.
+
